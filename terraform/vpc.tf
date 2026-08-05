@@ -19,13 +19,62 @@ resource "aws_internet_gateway" "main" {
   }
 }
 
+# ---------------- VPC Flow Logs (CKV2_AWS_11) ----------------
+resource "aws_cloudwatch_log_group" "vpc_flow_log" {
+  name              = "/vpc/${var.project_name}-flow-logs"
+  retention_in_days = 90
+}
+
+resource "aws_iam_role" "vpc_flow_log" {
+  name = "${var.project_name}-vpc-flow-log-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "vpc_flow_log" {
+  name = "${var.project_name}-vpc-flow-log-policy"
+  role = aws_iam_role.vpc_flow_log.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup", "logs:CreateLogStream",
+        "logs:PutLogEvents", "logs:DescribeLogGroups", "logs:DescribeLogStreams"
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_flow_log" "main" {
+  iam_role_arn    = aws_iam_role.vpc_flow_log.arn
+  log_destination = aws_cloudwatch_log_group.vpc_flow_log.arn
+  traffic_type    = "ALL"
+  vpc_id          = aws_vpc.main.id
+}
+
+# ---------------- Default SG lockdown (CKV2_AWS_12) ----------------
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.main.id
+  # No ingress/egress blocks = deny all traffic on the default SG
+}
+
 # ---------------- Public subnets ----------------
 resource "aws_subnet" "public" {
   count                   = length(var.public_subnet_cidrs)
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidrs[count.index]
   availability_zone       = var.availability_zones[count.index]
-  map_public_ip_on_launch = true
+  map_public_ip_on_launch = false # CKV_AWS_130 — assign via EIP instead
 
   tags = {
     Name = "${var.project_name}-public-${count.index + 1}"

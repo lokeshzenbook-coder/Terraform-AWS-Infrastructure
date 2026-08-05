@@ -53,9 +53,11 @@ variable "key_pair_name" {
 }
 
 variable "allowed_ssh_cidrs" {
-  description = "CIDR blocks allowed to SSH into instances"
+  description = "CIDR blocks allowed to SSH into instances — no public default; must be set explicitly per environment"
   type        = list(string)
-  default     = ["0.0.0.0/0"] # tighten this for real environments
+  # No default. Set this in terraform.tfvars or via -var per environment,
+  # e.g. your office/VPN CIDR. Leaving this unset forces a conscious choice
+  # instead of silently defaulting to 0.0.0.0/0 (CKV_AWS_24).
 }
 
 variable "github_org" {
