@@ -39,25 +39,27 @@ resource "aws_iam_openid_connect_provider" "github" {
   thumbprint_list = [data.tls_certificate.github.certificates[0].sha1_fingerprint]
 }
 
-resource "aws_iam_role" "github_actions" {
-  name = "${var.project_name}-github-actions-role"
+resource "aws_iam_role_policy" "github_actions_scoped" {
+  name = "${var.project_name}-github-actions-policy"
+  role = aws_iam_role.github_actions.id
 
-  assume_role_policy = jsonencode({
+  policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
-      Action    = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        StringLike = {
-          # Restrict to a specific repo; adjust ref filter (branch/tag) as needed
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${var.github_repo}:*"
-        }
+    Statement = [
+      {
+        Sid    = "TerraformManagedResources"
+        Effect = "Allow"
+        Action = [
+          "ec2:*",
+          "iam:GetRole", "iam:PassRole", "iam:CreateRole", "iam:DeleteRole",
+          "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy", "iam:GetRolePolicy", "iam:TagRole",
+          "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile",
+          "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile"
+        ]
+        Resource = "*"
       }
-    }]
+    ]
   })
 }
 
