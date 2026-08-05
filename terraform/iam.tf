@@ -39,9 +39,9 @@ resource "aws_iam_openid_connect_provider" "github" {
   thumbprint_list = [data.tls_certificate.github.certificates[0].sha1_fingerprint]
 }
 
-# Missing role definition — added below.
-# Scoped to a specific repo/branch via the OIDC "sub" claim so any
-# GitHub repo can't assume this role, only the one you name here.
+# Trust policy now covers BOTH push-to-main and pull_request runs,
+# since the pipeline's `plan` job triggers on both events and each
+# produces a different "sub" claim in the OIDC token.
 resource "aws_iam_role" "github_actions" {
   name = "${var.project_name}-github-actions-role"
 
@@ -56,7 +56,10 @@ resource "aws_iam_role" "github_actions" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main",
+            "repo:${var.github_org}/${var.github_repo}:pull_request"
+          ]
         }
       }
     }]
