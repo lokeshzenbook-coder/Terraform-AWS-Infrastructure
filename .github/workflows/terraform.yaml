@@ -45,14 +45,31 @@ jobs:
     name: "Stage 2 - Terraform fmt"
     needs: gitleaks
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.6.6"
-      - name: terraform fmt -check
+
+      - name: terraform fmt (auto-fix)
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform fmt -check -recursive -diff
+        run: terraform fmt -recursive
+
+      - name: Commit and push formatting fixes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "style: terraform fmt auto-fix [skip ci]"
+            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+          else
+            echo "No formatting changes needed."
+          fi
 
   # ---------------------------------------------------
   # Stage 3: TFLint
