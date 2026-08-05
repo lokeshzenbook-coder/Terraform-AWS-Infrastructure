@@ -73,36 +73,36 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: tflint -f compact
 
-# ---------------------------------------------------
-# Stage 4: Checkov
-# ---------------------------------------------------
-checkov:
-  name: "Stage 4 - Checkov"
-  needs: tflint
-  runs-on: ubuntu-latest
+  # ---------------------------------------------------
+  # Stage 4: Checkov
+  # ---------------------------------------------------
+  checkov:
+    name: "Stage 4 - Checkov"
+    needs: tflint
+    runs-on: ubuntu-latest
 
-  permissions:
-    contents: read
-    security-events: write
+    permissions:
+      contents: read
+      security-events: write
 
-  steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Run Checkov
-      uses: bridgecrewio/checkov-action@v12
-      with:
-        directory: ${{ env.TF_WORKING_DIR }}
-        framework: terraform
-        soft_fail: false
-        output_format: sarif
-        output_file_path: ${{ env.TF_WORKING_DIR }}/checkov-results.sarif
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ env.TF_WORKING_DIR }}
+          framework: terraform
+          soft_fail: false
+          output_format: sarif
+          output_file_path: ${{ env.TF_WORKING_DIR }}/checkov-results.sarif
 
-    - name: Upload SARIF Report
-      if: always()
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: ${{ env.TF_WORKING_DIR }}/checkov-results.sarif
+      - name: Upload SARIF Report
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.TF_WORKING_DIR }}/checkov-results.sarif
 
   # ---------------------------------------------------
   # Stage 5: tfsec
