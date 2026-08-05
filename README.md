@@ -20,7 +20,7 @@
 ├── policy/
 │   └── terraform.rego         # OPA policy evaluated against the plan JSON
 └── .github/workflows/
-    └── terraform-pipeline.yml # 12-stage pipeline
+    └── terraform.yaml # 12-stage pipeline
 ```
 
 ## One-time setup

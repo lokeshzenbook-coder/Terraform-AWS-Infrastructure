@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "terraform/**"
-      - ".github/workflows/terraform-pipeline.yml"
+      - ".github/workflows/terraform.yaml"
   pull_request:
     branches: [main]
     paths:
