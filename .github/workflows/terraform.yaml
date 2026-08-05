@@ -1,0 +1,292 @@
+name: Terraform CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform-pipeline.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+
+permissions:
+  id-token: write   # required for OIDC
+  contents: read
+  pull-requests: write
+
+env:
+  TF_WORKING_DIR: terraform
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+
+jobs:
+
+  # ---------------------------------------------------
+  # Stage 1: GitLeaks - secret scanning
+  # ---------------------------------------------------
+  gitleaks:
+    name: "Stage 1 - GitLeaks"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run GitLeaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------
+  # Stage 2: terraform fmt
+  # ---------------------------------------------------
+  fmt:
+    name: "Stage 2 - Terraform fmt"
+    needs: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+      - name: terraform fmt -check
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform fmt -check -recursive -diff
+
+  # ---------------------------------------------------
+  # Stage 3: TFLint
+  # ---------------------------------------------------
+  tflint:
+    name: "Stage 3 - TFLint"
+    needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+      - name: Init TFLint
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: tflint --init
+      - name: Run TFLint
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: tflint -f compact
+
+  # ---------------------------------------------------
+  # Stage 4: Checkov
+  # ---------------------------------------------------
+  checkov:
+    name: "Stage 4 - Checkov"
+    needs: tflint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ${{ env.TF_WORKING_DIR }}
+          framework: terraform
+          soft_fail: false
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+
+  # ---------------------------------------------------
+  # Stage 5: tfsec
+  # ---------------------------------------------------
+  tfsec:
+    name: "Stage 5 - tfsec"
+    needs: checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: ${{ env.TF_WORKING_DIR }}
+          soft_fail: false
+
+  # ---------------------------------------------------
+  # Stage 6: Terrascan
+  # ---------------------------------------------------
+  terrascan:
+    name: "Stage 6 - Terrascan"
+    needs: tfsec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Terrascan
+        uses: tenable/terrascan-action@main
+        with:
+          iac_type: terraform
+          iac_dir: ${{ env.TF_WORKING_DIR }}
+          policy_type: aws
+          only_warn: false
+          sarif_upload: true
+
+  # ---------------------------------------------------
+  # Stage 7: Infracost
+  # ---------------------------------------------------
+  infracost:
+    name: "Stage 7 - Infracost"
+    needs: terrascan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+      - name: Generate Infracost cost estimate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: infracost breakdown --path . --format json --out-file /tmp/infracost.json
+      - name: Post Infracost comment
+        if: github.event_name == 'pull_request'
+        run: |
+          infracost comment github --path /tmp/infracost.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --github-token "${{ secrets.GITHUB_TOKEN }}" \
+            --pull-request "${{ github.event.pull_request.number }}" \
+            --behavior update
+
+  # ---------------------------------------------------
+  # Stage 8 & 9: Terraform Validate + Plan
+  # ---------------------------------------------------
+  plan:
+    name: "Stage 8-9 - Validate & Plan"
+    needs: infracost
+    runs-on: ubuntu-latest
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform plan -out=tfplan -input=false -detailed-exitcode || echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Export plan as JSON (for OPA)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform show -json tfplan > tfplan.json
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: |
+            ${{ env.TF_WORKING_DIR }}/tfplan
+            ${{ env.TF_WORKING_DIR }}/tfplan.json
+          retention-days: 5
+
+  # ---------------------------------------------------
+  # Stage 10: OPA Policy checks against the plan
+  # ---------------------------------------------------
+  opa_policy:
+    name: "Stage 10 - OPA Policy"
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Setup OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      - name: Run OPA evaluation
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          result=$(opa eval --format pretty \
+            --data ../policy/terraform.rego \
+            --input tfplan.json \
+            "data.terraform.policy.deny")
+          echo "$result"
+          if [ "$result" != "[]" ]; then
+            echo "OPA policy violations found:"
+            echo "$result"
+            exit 1
+          fi
+
+  # ---------------------------------------------------
+  # Stage 11: Manual Approval
+  # Gate via a protected GitHub Environment that
+  # requires reviewers (configure in repo Settings ->
+  # Environments -> production -> Required reviewers)
+  # ---------------------------------------------------
+  manual_approval:
+    name: "Stage 11 - Manual Approval"
+    needs: opa_policy
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Approval granted
+        run: echo "Manual approval satisfied via GitHub Environment protection rules."
+
+  # ---------------------------------------------------
+  # Stage 12: Terraform Apply
+  # ---------------------------------------------------
+  apply:
+    name: "Stage 12 - Terraform Apply"
+    needs: manual_approval
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -input=false -auto-approve tfplan
