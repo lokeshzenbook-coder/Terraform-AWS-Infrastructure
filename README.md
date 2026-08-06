@@ -20,7 +20,7 @@
 ├── policy/
 │   └── terraform.rego         # OPA policy evaluated against the plan JSON
 └── .github/workflows/
-    └── terraform-pipeline.yml # 12-stage pipeline
+    └── terraform.yaml # 12-stage pipeline
 ```
 
 ## One-time setup
@@ -68,9 +68,9 @@
 | 12 | terraform apply | Applies the approved plan |
 
 ## Notes / things to tighten before production use
-- `iam.tf` attaches `AdministratorAccess` to the GitHub Actions role as a placeholder —
+- `iam.tf` grants the GitHub Actions role wildcard actions across EC2/IAM/S3/Route53/ELB/ASG/Logs/CloudWatch/ACM as a placeholder —
   scope this down to the specific actions/resources your pipeline needs.
 - `allowed_ssh_cidrs` defaults to `0.0.0.0/0` in variable defaults; override it in
   `terraform.tfvars`.
-- The OIDC trust policy's `sub` condition uses a wildcard (`repo:org/repo:*`); restrict
-  to specific branches/environments (e.g. `repo:org/repo:ref:refs/heads/main`) for tighter security.
+- The OIDC trust policy's `sub` condition is scoped to `main` branch pushes and pull requests.
+  Add a `repo:org/repo:ref:refs/heads/<branch>` entry if you deploy from additional branches.

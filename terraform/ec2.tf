@@ -1,3 +1,18 @@
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
 resource "aws_instance" "app" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
@@ -22,4 +37,17 @@ resource "aws_instance" "app" {
   tags = {
     Name = "${var.project_name}-app-server"
   }
+}
+
+resource "aws_eip" "app" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${var.project_name}-app-eip"
+  }
+}
+
+resource "aws_eip_association" "app" {
+  instance_id   = aws_instance.app.id
+  allocation_id = aws_eip.app.id
 }
