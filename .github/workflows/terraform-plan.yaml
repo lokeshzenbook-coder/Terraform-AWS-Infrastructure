@@ -1,27 +1,50 @@
-name: Terraform CI/CD Pipeline
+name: "Terraform Plan"
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "terraform/**"
-      - ".github/workflows/terraform.yaml"
   pull_request:
     branches: [main]
     paths:
-      - "terraform/**"
+      - "environments/**"
+      - "modules/**"
+      - ".github/workflows/terraform-plan.yaml"
 
 permissions:
-  id-token: write   # required for OIDC
+  id-token: write
   contents: read
   pull-requests: write
+  security-events: write
 
 env:
-  TF_WORKING_DIR: terraform
   AWS_REGION: us-east-1
   AWS_ROLE_ARN: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
 
 jobs:
+
+  # ---------------------------------------------------
+  # Detect which environments changed
+  # ---------------------------------------------------
+  detect-changes:
+    name: "Detect Changed Environments"
+    runs-on: ubuntu-latest
+    outputs:
+      dev: ${{ steps.filter.outputs.dev }}
+      staging: ${{ steps.filter.outputs.staging }}
+      prod: ${{ steps.filter.outputs.prod }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            dev:
+              - 'environments/dev/**'
+              - 'modules/**'
+            staging:
+              - 'environments/staging/**'
+              - 'modules/**'
+            prod:
+              - 'environments/prod/**'
+              - 'modules/**'
 
   # ---------------------------------------------------
   # Stage 1: GitLeaks - secret scanning
@@ -39,7 +62,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ---------------------------------------------------
-  # Stage 2: terraform fmt
+  # Stage 2: Terraform fmt
   # ---------------------------------------------------
   fmt:
     name: "Stage 2 - Terraform fmt"
@@ -54,11 +77,8 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.6.6"
-
       - name: terraform fmt (auto-fix)
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform fmt -recursive
-
       - name: Commit and push formatting fixes
         run: |
           if [ -n "$(git status --porcelain)" ]; then
@@ -84,10 +104,8 @@ jobs:
         with:
           tflint_version: latest
       - name: Init TFLint
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: tflint --init
       - name: Run TFLint
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: tflint -f compact
 
   # ---------------------------------------------------
@@ -97,29 +115,24 @@ jobs:
     name: "Stage 4 - Checkov"
     needs: tflint
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
       security-events: write
-
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory: ${{ env.TF_WORKING_DIR }}
+          directory: .
           framework: terraform
           soft_fail: true
           output_format: sarif
-          output_file_path: ${{ env.TF_WORKING_DIR }}/checkov-results.sarif
-
+          output_file_path: checkov-results.sarif
       - name: Upload SARIF Report
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: ${{ env.TF_WORKING_DIR }}/checkov-results.sarif
+          sarif_file: checkov-results.sarif
 
   # ---------------------------------------------------
   # Stage 5: tfsec
@@ -133,7 +146,6 @@ jobs:
       - name: Run tfsec
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
-          working_directory: ${{ env.TF_WORKING_DIR }}
           soft_fail: true
 
   # ---------------------------------------------------
@@ -152,56 +164,25 @@ jobs:
         uses: tenable/terrascan-action@main
         with:
           iac_type: terraform
-          iac_dir: ${{ env.TF_WORKING_DIR }}
           policy_type: aws
           only_warn: false
           sarif_upload: true
 
   # ---------------------------------------------------
-  # Stage 7: Infracost
-  # ---------------------------------------------------
-  infracost:
-    name: "Stage 7 - Infracost"
-    needs: terrascan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.6.6"
-      - name: Setup Infracost
-        uses: infracost/actions/setup@v3
-        with:
-          api-key: ${{ secrets.INFRACOST_API_KEY }}
-      - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend=false
-      - name: Generate Infracost cost estimate
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: infracost breakdown --path . --format json --out-file /tmp/infracost.json
-      - name: Post Infracost comment
-        if: github.event_name == 'pull_request'
-        run: |
-          infracost comment github --path /tmp/infracost.json \
-            --repo "$GITHUB_REPOSITORY" \
-            --github-token "${{ secrets.GITHUB_TOKEN }}" \
-            --pull-request "${{ github.event.pull_request.number }}" \
-            --behavior update
-
-  # ---------------------------------------------------
-  # Stage 8 & 9: Terraform Validate + Plan
+  # Plan (per changed environment)
   # ---------------------------------------------------
   plan:
-    name: "Stage 8-9 - Validate & Plan"
-    needs: infracost
+    name: "Plan - ${{ matrix.env }}"
+    needs: [terrascan, detect-changes]
+    if: needs.detect-changes.outputs[matrix.env] == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.env }}
     outputs:
       plan_exitcode: ${{ steps.plan.outputs.exitcode }}
     steps:
@@ -218,56 +199,120 @@ jobs:
           terraform_version: "1.6.6"
 
       - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -backend=false
 
       - name: Terraform Validate
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform validate
 
       - name: Terraform Plan
         id: plan
-        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform plan -out=tfplan -input=false -detailed-exitcode || echo "exitcode=$?" >> "$GITHUB_OUTPUT"
 
-      - name: Export plan as JSON (for OPA)
-        working-directory: ${{ env.TF_WORKING_DIR }}
+      - name: Export plan as JSON
         run: terraform show -json tfplan > tfplan.json
 
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ matrix.env }}
           path: |
-            ${{ env.TF_WORKING_DIR }}/tfplan
-            ${{ env.TF_WORKING_DIR }}/tfplan.json
+            environments/${{ matrix.env }}/tfplan
+            environments/${{ matrix.env }}/tfplan.json
           retention-days: 5
 
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('environments/${{ matrix.env }}/tfplan.json', 'utf8');
+            const planJSON = JSON.parse(plan);
+            let output = `### Terraform Plan - \`${{ matrix.env }}\`\n\n`;
+            const create = planJSON.resource_changes.filter(c => c.change.actions.includes('create'));
+            const update = planJSON.resource_changes.filter(c => c.change.actions.includes('update'));
+            const destroy = planJSON.resource_changes.filter(c => c.change.actions.includes('destroy'));
+            output += `| Action | Count |\n|--------|-------|\n`;
+            output += `| Create | ${create.length} |\n`;
+            output += `| Update | ${update.length} |\n`;
+            output += `| Destroy | ${destroy.length} |\n\n`;
+            if (destroy.length > 0) {
+              output += `> :warning: **${destroy.length} resource(s) will be destroyed**\n\n`;
+            }
+            const body = output;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            })
+
   # ---------------------------------------------------
-  # Stage 10: OPA Policy checks against the plan
+  # Infracost (only for changed envs)
+  # ---------------------------------------------------
+  infracost:
+    name: "Infracost - ${{ matrix.env }}"
+    needs: [plan, detect-changes]
+    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+      - name: Terraform Init
+        working-directory: environments/${{ matrix.env }}
+        run: terraform init -backend=false
+      - name: Generate Infracost cost estimate
+        working-directory: environments/${{ matrix.env }}
+        run: infracost breakdown --path . --format json --out-file /tmp/infracost-${{ matrix.env }}.json
+      - name: Post Infracost comment
+        if: github.event_name == 'pull_request'
+        run: |
+          infracost comment github --path /tmp/infracost-${{ matrix.env }}.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --github-token "${{ secrets.GITHUB_TOKEN }}" \
+            --pull-request "${{ github.event.pull_request.number }}" \
+            --behavior update
+
+  # ---------------------------------------------------
+  # OPA Policy (per changed environment)
   # ---------------------------------------------------
   opa_policy:
-    name: "Stage 10 - OPA Policy"
-    needs: plan
+    name: "OPA Policy - ${{ matrix.env }}"
+    needs: [plan, detect-changes]
+    if: needs.detect-changes.outputs[matrix.env] == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
     steps:
       - uses: actions/checkout@v4
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
-          name: tfplan
-          path: ${{ env.TF_WORKING_DIR }}
-
+          name: tfplan-${{ matrix.env }}
+          path: environments/${{ matrix.env }}
       - name: Setup OPA
         uses: open-policy-agent/setup-opa@v2
         with:
           version: latest
-
       - name: Run OPA evaluation
-        working-directory: ${{ env.TF_WORKING_DIR }}
+        working-directory: environments/${{ matrix.env }}
         run: |
           result=$(opa eval --format pretty \
-            --data ../policy/terraform.rego \
+            --data ../../policy/terraform.rego \
             --input tfplan.json \
             "data.terraform.policy.deny")
           echo "$result"
@@ -276,56 +321,3 @@ jobs:
             echo "$result"
             exit 1
           fi
-
-  # ---------------------------------------------------
-  # Stage 11: Manual Approval
-  # Gate via a protected GitHub Environment that
-  # requires reviewers (configure in repo Settings ->
-  # Environments -> production -> Required reviewers)
-  # ---------------------------------------------------
-  manual_approval:
-    name: "Stage 11 - Manual Approval"
-    needs: opa_policy
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-    steps:
-      - name: Approval granted
-        run: echo "Manual approval satisfied via GitHub Environment protection rules."
-
-  # ---------------------------------------------------
-  # Stage 12: Terraform Apply
-  # ---------------------------------------------------
-  apply:
-    name: "Stage 12 - Terraform Apply"
-    needs: manual_approval
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.6.6"
-
-      - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend=false
-
-      - name: Download plan artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-          path: ${{ env.TF_WORKING_DIR }}
-
-      - name: Terraform Apply
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform apply -input=false -auto-approve tfplan

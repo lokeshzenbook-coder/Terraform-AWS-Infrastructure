@@ -1,0 +1,144 @@
+name: "Terraform Apply"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "environments/**"
+      - "modules/**"
+      - ".github/workflows/terraform-apply.yaml"
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+
+jobs:
+
+  # ---------------------------------------------------
+  # Detect which environments changed
+  # ---------------------------------------------------
+  detect-changes:
+    name: "Detect Changed Environments"
+    runs-on: ubuntu-latest
+    outputs:
+      dev: ${{ steps.filter.outputs.dev }}
+      staging: ${{ steps.filter.outputs.staging }}
+      prod: ${{ steps.filter.outputs.prod }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            dev:
+              - 'environments/dev/**'
+              - 'modules/**'
+            staging:
+              - 'environments/staging/**'
+              - 'modules/**'
+            prod:
+              - 'environments/prod/**'
+              - 'modules/**'
+
+  # ---------------------------------------------------
+  # Plan (per changed environment)
+  # ---------------------------------------------------
+  plan:
+    name: "Plan - ${{ matrix.env }}"
+    needs: detect-changes
+    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.env }}
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -out=tfplan -input=false -detailed-exitcode || echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Export plan as JSON
+        run: terraform show -json tfplan > tfplan.json
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.env }}
+          path: |
+            environments/${{ matrix.env }}/tfplan
+            environments/${{ matrix.env }}/tfplan.json
+          retention-days: 5
+
+  # ---------------------------------------------------
+  # Approval + Apply (per changed environment)
+  # Uses GitHub Environments for approval gates:
+  #   dev     - no approval required
+  #   staging - 1 required reviewer
+  #   prod    - 2 required reviewers + wait timer
+  # ---------------------------------------------------
+  apply:
+    name: "Apply - ${{ matrix.env }}"
+    needs: [plan, detect-changes]
+    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ matrix.env }}
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod]
+    defaults:
+      run:
+        working-directory: environments/${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Terraform Init
+        run: terraform init -backend-config="key=envs/${{ matrix.env }}/terraform.tfstate"
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ matrix.env }}
+          path: environments/${{ matrix.env }}
+
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve tfplan

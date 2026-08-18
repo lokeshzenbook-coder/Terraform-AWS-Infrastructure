@@ -1,29 +1,29 @@
 output "vpc_id" {
-  description = "ID of the main VPC"
-  value       = aws_vpc.main.id
+  description = "ID of the VPC"
+  value       = module.vpc.vpc_id
 }
 
 output "public_subnet_ids" {
   description = "IDs of the public subnets"
-  value       = aws_subnet.public[*].id
+  value       = module.vpc.public_subnet_ids
 }
 
 output "private_subnet_ids" {
   description = "IDs of the private subnets"
-  value       = aws_subnet.private[*].id
+  value       = module.vpc.private_subnet_ids
 }
 
 output "ec2_instance_id" {
   description = "ID of the app EC2 instance"
-  value       = aws_instance.app.id
+  value       = module.compute.instance_id
 }
 
 output "ec2_public_ip" {
   description = "Elastic IP attached to the app instance"
-  value       = aws_eip.app.public_ip
+  value       = module.compute.public_ip
 }
 
 output "github_actions_role_arn" {
   description = "Set this as the role-to-assume in the GitHub Actions workflow"
-  value       = aws_iam_role.github_actions.arn
+  value       = module.iam.github_actions_role_arn
 }

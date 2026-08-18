@@ -1,7 +1,7 @@
 resource "aws_security_group" "web" {
-  name        = "${var.project_name}-web-sg"
+  name        = "${var.project_name}-${var.environment}-web-sg"
   description = "Security group for web/app EC2 instances"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = var.vpc_id
 
   ingress {
     description = "HTTPS from anywhere"
@@ -36,6 +36,6 @@ resource "aws_security_group" "web" {
   }
 
   tags = {
-    Name = "${var.project_name}-web-sg"
+    Name = "${var.project_name}-${var.environment}-web-sg"
   }
 }

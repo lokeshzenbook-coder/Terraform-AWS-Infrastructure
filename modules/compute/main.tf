@@ -13,12 +13,12 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-resource "aws_instance" "app" {
+resource "aws_instance" "this" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
-  subnet_id              = aws_subnet.public[0].id
-  vpc_security_group_ids = [aws_security_group.web.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
+  subnet_id              = var.public_subnet_id
+  vpc_security_group_ids = var.security_group_ids
+  iam_instance_profile   = var.instance_profile_name
   key_name               = var.key_pair_name
   monitoring             = true # CKV_AWS_126
   ebs_optimized          = true # CKV_AWS_135
@@ -35,19 +35,19 @@ resource "aws_instance" "app" {
   }
 
   tags = {
-    Name = "${var.project_name}-app-server"
+    Name = "${var.project_name}-${var.environment}-app-server"
   }
 }
 
-resource "aws_eip" "app" {
+resource "aws_eip" "this" {
   domain = "vpc"
 
   tags = {
-    Name = "${var.project_name}-app-eip"
+    Name = "${var.project_name}-${var.environment}-app-eip"
   }
 }
 
-resource "aws_eip_association" "app" {
-  instance_id   = aws_instance.app.id
-  allocation_id = aws_eip.app.id
+resource "aws_eip_association" "this" {
+  instance_id   = aws_instance.this.id
+  allocation_id = aws_eip.this.id
 }
