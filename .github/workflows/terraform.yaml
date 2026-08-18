@@ -143,6 +143,9 @@ jobs:
     name: "Stage 6 - Terrascan"
     needs: tfsec
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
       - name: Run Terrascan
@@ -179,7 +182,7 @@ jobs:
           api-key: ${{ secrets.INFRACOST_API_KEY }}
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init
+        run: terraform init -backend=false
       - name: Generate Infracost cost estimate
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: infracost breakdown --path . --format json --out-file /tmp/infracost.json
@@ -216,7 +219,7 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init
+        run: terraform init -backend=false
 
       - name: Terraform Validate
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -315,7 +318,7 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init
+        run: terraform init -backend=false
 
       - name: Download plan artifact
         uses: actions/download-artifact@v4
