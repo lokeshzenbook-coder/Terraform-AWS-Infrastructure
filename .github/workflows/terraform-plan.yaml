@@ -168,6 +168,10 @@ jobs:
           policy_type: aws
           only_warn: false
           sarif_upload: true
+          # Public web SG intentionally exposes 80/443 (AC_AWS_0228/0229)
+          skip_rules: |
+            AC_AWS_0228
+            AC_AWS_0229
 
   # ---------------------------------------------------
   # Plan (per changed environment)
