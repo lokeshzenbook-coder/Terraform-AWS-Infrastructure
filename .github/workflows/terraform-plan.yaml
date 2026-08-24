@@ -27,9 +27,8 @@ jobs:
     name: "Detect Changed Environments"
     runs-on: ubuntu-latest
     outputs:
-      dev: ${{ steps.filter.outputs.dev }}
-      staging: ${{ steps.filter.outputs.staging }}
-      prod: ${{ steps.filter.outputs.prod }}
+      # JSON array of changed environment names, e.g. ["dev","prod"]
+      matrix: ${{ steps.filter.outputs.changes }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -80,13 +79,15 @@ jobs:
       - name: terraform fmt (auto-fix)
         run: terraform fmt -recursive
       - name: Commit and push formatting fixes
+        env:
+          TARGET_REF: ${{ github.head_ref || github.ref_name }}
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add -A
             git commit -m "style: terraform fmt auto-fix [skip ci]"
-            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+            git push origin "HEAD:${TARGET_REF}"
           else
             echo "No formatting changes needed."
           fi
@@ -174,12 +175,14 @@ jobs:
   plan:
     name: "Plan - ${{ matrix.env }}"
     needs: [terrascan, detect-changes]
-    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    # NOTE: the matrix context is not available in job-level `if`,
+    # so the changed environments are fed into the matrix itself.
+    if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        env: [dev, staging, prod]
+        env: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
     defaults:
       run:
         working-directory: environments/${{ matrix.env }}
@@ -206,7 +209,17 @@ jobs:
 
       - name: Terraform Plan
         id: plan
-        run: terraform plan -out=tfplan -input=false -detailed-exitcode || echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+        run: |
+          set +e
+          terraform plan -out=tfplan -input=false -detailed-exitcode
+          code=$?
+          set -e
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          # 0 = no changes, 2 = changes present (ok), 1 = real error
+          if [ "$code" -eq 1 ]; then
+            exit 1
+          fi
+          exit 0
 
       - name: Export plan as JSON
         run: terraform show -json tfplan > tfplan.json
@@ -253,12 +266,14 @@ jobs:
   infracost:
     name: "Infracost - ${{ matrix.env }}"
     needs: [plan, detect-changes]
-    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
     runs-on: ubuntu-latest
+    env:
+      INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY }}
     strategy:
       fail-fast: false
       matrix:
-        env: [dev, staging, prod]
+        env: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -267,17 +282,20 @@ jobs:
         with:
           terraform_version: "1.6.6"
       - name: Setup Infracost
+        if: ${{ env.INFRACOST_API_KEY != '' }}
         uses: infracost/actions/setup@v3
         with:
           api-key: ${{ secrets.INFRACOST_API_KEY }}
       - name: Terraform Init
+        if: ${{ env.INFRACOST_API_KEY != '' }}
         working-directory: environments/${{ matrix.env }}
         run: terraform init -backend=false
       - name: Generate Infracost cost estimate
+        if: ${{ env.INFRACOST_API_KEY != '' }}
         working-directory: environments/${{ matrix.env }}
         run: infracost breakdown --path . --format json --out-file /tmp/infracost-${{ matrix.env }}.json
       - name: Post Infracost comment
-        if: github.event_name == 'pull_request'
+        if: ${{ env.INFRACOST_API_KEY != '' && github.event_name == 'pull_request' }}
         run: |
           infracost comment github --path /tmp/infracost-${{ matrix.env }}.json \
             --repo "$GITHUB_REPOSITORY" \
@@ -291,12 +309,12 @@ jobs:
   opa_policy:
     name: "OPA Policy - ${{ matrix.env }}"
     needs: [plan, detect-changes]
-    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        env: [dev, staging, prod]
+        env: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - name: Download plan artifact
@@ -311,13 +329,15 @@ jobs:
       - name: Run OPA evaluation
         working-directory: environments/${{ matrix.env }}
         run: |
-          result=$(opa eval --format pretty \
+          opa eval --format raw \
             --data ../../policy/terraform.rego \
             --input tfplan.json \
-            "data.terraform.policy.deny")
-          echo "$result"
-          if [ "$result" != "[]" ]; then
-            echo "OPA policy violations found:"
-            echo "$result"
+            "data.terraform.policy.deny" > opa-deny.json
+          echo "OPA policy denials:"
+          cat opa-deny.json
+          result="$(cat opa-deny.json)"
+          # empty result or [] => compliant, otherwise violations found
+          if [ -n "$result" ] && [ "$result" != "[]" ]; then
+            echo "::error::OPA policy violations found"
             exit 1
           fi

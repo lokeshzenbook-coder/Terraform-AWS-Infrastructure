@@ -26,9 +26,8 @@ jobs:
     name: "Detect Changed Environments"
     runs-on: ubuntu-latest
     outputs:
-      dev: ${{ steps.filter.outputs.dev }}
-      staging: ${{ steps.filter.outputs.staging }}
-      prod: ${{ steps.filter.outputs.prod }}
+      # JSON array of changed environment names, e.g. ["dev","prod"]
+      matrix: ${{ steps.filter.outputs.changes }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -51,12 +50,14 @@ jobs:
   plan:
     name: "Plan - ${{ matrix.env }}"
     needs: detect-changes
-    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    # NOTE: the matrix context is not available in job-level `if`,
+    # so the changed environments are fed into the matrix itself.
+    if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        env: [dev, staging, prod]
+        env: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
     defaults:
       run:
         working-directory: environments/${{ matrix.env }}
@@ -83,7 +84,17 @@ jobs:
 
       - name: Terraform Plan
         id: plan
-        run: terraform plan -out=tfplan -input=false -detailed-exitcode || echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+        run: |
+          set +e
+          terraform plan -out=tfplan -input=false -detailed-exitcode
+          code=$?
+          set -e
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          # 0 = no changes, 2 = changes present (ok), 1 = real error
+          if [ "$code" -eq 1 ]; then
+            exit 1
+          fi
+          exit 0
 
       - name: Export plan as JSON
         run: terraform show -json tfplan > tfplan.json
@@ -107,14 +118,14 @@ jobs:
   apply:
     name: "Apply - ${{ matrix.env }}"
     needs: [plan, detect-changes]
-    if: needs.detect-changes.outputs[matrix.env] == 'true'
+    if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
     runs-on: ubuntu-latest
     environment:
       name: ${{ matrix.env }}
     strategy:
       fail-fast: false
       matrix:
-        env: [dev, staging, prod]
+        env: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
     defaults:
       run:
         working-directory: environments/${{ matrix.env }}

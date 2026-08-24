@@ -3,7 +3,7 @@ package terraform.policy
 import future.keywords.in
 
 # Deny if any S3 bucket lacks encryption
-deny[msg] {
+deny contains msg if {
   resource := input.resource_changes[_]
   resource.type == "aws_s3_bucket"
   not resource.change.after.server_side_encryption_configuration
@@ -11,7 +11,7 @@ deny[msg] {
 }
 
 # Deny security groups that open SSH (22) to the world
-deny[msg] {
+deny contains msg if {
   resource := input.resource_changes[_]
   resource.type == "aws_security_group"
   rule := resource.change.after.ingress[_]
@@ -21,7 +21,7 @@ deny[msg] {
 }
 
 # Deny EC2 instances without IMDSv2 enforced
-deny[msg] {
+deny contains msg if {
   resource := input.resource_changes[_]
   resource.type == "aws_instance"
   resource.change.after.metadata_options[0].http_tokens != "required"
@@ -29,7 +29,7 @@ deny[msg] {
 }
 
 # Deny unencrypted EBS volumes
-deny[msg] {
+deny contains msg if {
   resource := input.resource_changes[_]
   resource.type == "aws_instance"
   not resource.change.after.root_block_device[0].encrypted

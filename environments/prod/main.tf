@@ -22,12 +22,12 @@ variable "aws_region" {
 module "vpc" {
   source = "../../modules/vpc"
 
-  project_name        = var.project_name
-  environment         = var.environment
-  vpc_cidr            = var.vpc_cidr
-  public_subnet_cidrs = var.public_subnet_cidrs
+  project_name         = var.project_name
+  environment          = var.environment
+  vpc_cidr             = var.vpc_cidr
+  public_subnet_cidrs  = var.public_subnet_cidrs
   private_subnet_cidrs = var.private_subnet_cidrs
-  availability_zones  = var.availability_zones
+  availability_zones   = var.availability_zones
 }
 
 ############################################
@@ -36,9 +36,9 @@ module "vpc" {
 module "security_groups" {
   source = "../../modules/security-groups"
 
-  project_name     = var.project_name
-  environment      = var.environment
-  vpc_id           = module.vpc.vpc_id
+  project_name      = var.project_name
+  environment       = var.environment
+  vpc_id            = module.vpc.vpc_id
   allowed_ssh_cidrs = var.allowed_ssh_cidrs
 }
 
@@ -60,11 +60,11 @@ module "iam" {
 module "compute" {
   source = "../../modules/compute"
 
-  project_name         = var.project_name
-  environment          = var.environment
-  instance_type        = var.instance_type
-  public_subnet_id     = module.vpc.public_subnet_ids[0]
-  security_group_ids   = [module.security_groups.web_sg_id]
+  project_name          = var.project_name
+  environment           = var.environment
+  instance_type         = var.instance_type
+  public_subnet_id      = module.vpc.public_subnet_ids[0]
+  security_group_ids    = [module.security_groups.web_sg_id]
   instance_profile_name = module.iam.ec2_instance_profile_name
-  key_pair_name        = var.key_pair_name
+  key_pair_name         = var.key_pair_name
 }
